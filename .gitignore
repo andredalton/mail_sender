@@ -60,6 +60,12 @@ cover/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
+envios.db
+envios.db-shm
+envios.db-wal
+contatos_ranqueados.db
+contatos_ranqueados.db-shm
+contatos_ranqueados.db-wal
 
 # Flask stuff:
 instance/

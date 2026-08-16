@@ -3,6 +3,7 @@
 import json
 import os
 import smtplib
+import sqlite3
 import ssl
 import time
 
@@ -24,11 +25,11 @@ load_dotenv()
 # CONFIGURAÇÃO
 # ============================================================
 
-def env_bool(nome, default=False):
+def ler_booleano_ambiente(nome, padrao=False):
     valor = os.getenv(nome)
 
     if valor is None:
-        return default
+        return padrao
 
     return valor.strip().lower() in {
         "1",
@@ -39,29 +40,29 @@ def env_bool(nome, default=False):
     }
 
 
-def env_int(nome, default):
+def ler_inteiro_ambiente(nome, padrao):
     valor = os.getenv(nome)
 
     if valor is None:
-        return default
+        return padrao
 
     return int(valor)
 
 
-def env_float(nome, default):
+def ler_decimal_ambiente(nome, padrao):
     valor = os.getenv(nome)
 
     if valor is None:
-        return default
+        return padrao
 
     return float(valor)
 
 
-def env_set(nome, default):
+def ler_conjunto_ambiente(nome, padrao):
     valor = os.getenv(nome)
 
     if not valor:
-        valor = default
+        valor = padrao
 
     return {
         item.strip()
@@ -74,29 +75,16 @@ def env_set(nome, default):
 # ARQUIVOS
 # ============================================================
 
-ARQUIVO_CONTATOS = Path(
-    os.getenv(
-        "ARQUIVO_CONTATOS",
-        "contatos_transporte_individualizados_rankeados.json",
-    )
-)
-
-ARQUIVO_SAIDA = Path(
-    os.getenv(
-        "ARQUIVO_SAIDA",
-        "envios.jsonl",
-    )
-)
-
+BANCO_DADOS = Path(__file__).resolve().parent / "contatos_ranqueados.db"
 
 # ============================================================
 # GMAIL
 # ============================================================
 
-GMAIL_EMAIL = os.getenv("GMAIL_EMAIL")
+EMAIL_GMAIL = os.getenv("EMAIL_GMAIL")
 
-GMAIL_APP_PASSWORD = os.getenv(
-    "GMAIL_APP_PASSWORD"
+SENHA_APP_GMAIL = os.getenv(
+    "SENHA_APP_GMAIL"
 )
 
 
@@ -124,33 +112,33 @@ UNIVERSIDADE = os.getenv(
 # CAMPANHA
 # ============================================================
 
-DRY_RUN = env_bool(
-    "DRY_RUN",
+SIMULACAO = ler_booleano_ambiente(
+    "SIMULACAO",
     True,
 )
 
-CATEGORIAS_PERMITIDAS = env_set(
+CATEGORIAS_PERMITIDAS = ler_conjunto_ambiente(
     "CATEGORIAS_PERMITIDAS",
     "A",
 )
 
-SCORE_MINIMO = env_int(
+SCORE_MINIMO = ler_inteiro_ambiente(
     "SCORE_MINIMO",
     80,
 )
 
-MAX_ENVIOS_POR_EXECUCAO = env_int(
-    "MAX_ENVIOS_POR_EXECUCAO",
+MAXIMO_ENVIOS_POR_EXECUCAO = ler_inteiro_ambiente(
+    "MAXIMO_ENVIOS_POR_EXECUCAO",
     10,
 )
 
-INTERVALO_SEGUNDOS = env_float(
+INTERVALO_SEGUNDOS = ler_decimal_ambiente(
     "INTERVALO_SEGUNDOS",
     30.0,
 )
 
-MAX_ERROS_CONSECUTIVOS = env_int(
-    "MAX_ERROS_CONSECUTIVOS",
+MAXIMO_ERROS_CONSECUTIVOS = ler_inteiro_ambiente(
+    "MAXIMO_ERROS_CONSECUTIVOS",
     5,
 )
 
@@ -159,13 +147,13 @@ MAX_ERROS_CONSECUTIVOS = env_int(
 # SMTP
 # ============================================================
 
-SMTP_HOST = os.getenv(
-    "SMTP_HOST",
+SERVIDOR_SMTP = os.getenv(
+    "SERVIDOR_SMTP",
     "smtp.gmail.com",
 )
 
-SMTP_PORT = env_int(
-    "SMTP_PORT",
+PORTA_SMTP = ler_inteiro_ambiente(
+    "PORTA_SMTP",
     465,
 )
 
@@ -198,71 +186,42 @@ def limpar_texto(valor):
     return str(valor).strip()
 
 
-def carregar_json(caminho):
-    with caminho.open(
-        "r",
-        encoding="utf-8",
-    ) as arquivo:
-        return json.load(arquivo)
+# ============================================================
+# HISTÓRICO DE ENVIO
+# ============================================================
+
+def conectar_banco():
+    conexao = sqlite3.connect(
+        BANCO_DADOS,
+        timeout=30,
+    )
+    conexao.execute("PRAGMA busy_timeout = 30000")
+    conexao.execute("PRAGMA synchronous = FULL")
+    return conexao
 
 
-# ============================================================
-# HISTÓRICO DE ENVIO - JSONL
-# ============================================================
+def carregar_contatos_banco():
+    with conectar_banco() as conexao:
+        linhas = conexao.execute(
+            "SELECT dados_json FROM contatos "
+            "ORDER BY score DESC, prioridade_envio, rowid"
+        )
+        return [json.loads(linha[0]) for linha in linhas]
+
 
 def carregar_emails_enviados():
     """
-    Lê ARQUIVO_SAIDA caso exista e retorna um set contendo
-    todos os e-mails que possuem pelo menos um registro com
-    status='enviado'.
-
-    Linhas inválidas são ignoradas com aviso.
+    Retorna destinatários enviados ou com resultado incerto.
     """
 
-    enviados = set()
-
-    if not ARQUIVO_SAIDA.exists():
-        return enviados
-
-    with ARQUIVO_SAIDA.open(
-        "r",
-        encoding="utf-8",
-    ) as arquivo:
-
-        for numero_linha, linha in enumerate(
-            arquivo,
-            start=1,
-        ):
-            linha = linha.strip()
-
-            if not linha:
-                continue
-
-            try:
-                registro = json.loads(linha)
-
-            except json.JSONDecodeError as erro:
-                print(
-                    f"AVISO: linha {numero_linha} inválida "
-                    f"em {ARQUIVO_SAIDA}: {erro}"
-                )
-                continue
-
-            email = limpar_texto(
-                registro.get("email")
-            ).lower()
-
-            status = limpar_texto(
-                registro.get("status")
-            ).lower()
-
-            if (
-                email
-                and status == "enviado"
-            ):
-                enviados.add(email)
-
-    return enviados
+    with conectar_banco() as conexao:
+        linhas = conexao.execute(
+            """
+            SELECT email FROM envios
+            WHERE status IN ('enviado', 'enviando')
+            """
+        )
+        return {linha[0] for linha in linhas}
 
 
 def append_registro_saida(
@@ -271,9 +230,7 @@ def append_registro_saida(
     erro=None,
 ):
     """
-    Acrescenta um objeto JSON ao FINAL do arquivo.
-
-    O arquivo nunca é reescrito.
+    Adiciona ou atualiza o registro no banco SQLite.
     """
 
     ranking = contato.get(
@@ -314,31 +271,34 @@ def append_registro_saida(
         ),
     }
 
-    # Cria diretórios intermediários se necessário.
-    ARQUIVO_SAIDA.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with ARQUIVO_SAIDA.open(
-        "a",
-        encoding="utf-8",
-    ) as arquivo:
-
-        json.dump(
-            registro,
-            arquivo,
-            ensure_ascii=False,
-        )
-
-        arquivo.write("\n")
-
-        # Garante que o registro seja enviado ao sistema
-        # operacional imediatamente.
-        arquivo.flush()
-
-        os.fsync(
-            arquivo.fileno()
+    with conectar_banco() as conexao:
+        conexao.execute(
+            """
+            INSERT INTO envios (
+                email, entidade, municipio, uf, score,
+                categoria, status, data, erro
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                entidade = excluded.entidade,
+                municipio = excluded.municipio,
+                uf = excluded.uf,
+                score = excluded.score,
+                categoria = excluded.categoria,
+                status = excluded.status,
+                data = excluded.data,
+                erro = excluded.erro
+            """,
+            (
+                registro["email"],
+                registro["entidade"],
+                registro["municipio"],
+                registro["uf"],
+                registro["score"],
+                registro["categoria"],
+                registro["status"],
+                registro["data"],
+                registro["erro"],
+            ),
         )
 
 
@@ -516,7 +476,7 @@ def criar_mensagem(contato):
     mensagem = EmailMessage()
 
     mensagem["From"] = (
-        f"{NOME} <{GMAIL_EMAIL}>"
+        f"{NOME} <{EMAIL_GMAIL}>"
     )
 
     mensagem["To"] = contato[
@@ -544,20 +504,20 @@ def criar_mensagem(contato):
 def validar_configuracao():
     erros = []
 
-    if not GMAIL_EMAIL:
+    if not EMAIL_GMAIL:
         erros.append(
-            "GMAIL_EMAIL não definido no .env"
+            "EMAIL_GMAIL não definido no .env"
         )
 
-    if not GMAIL_APP_PASSWORD:
+    if not SENHA_APP_GMAIL:
         erros.append(
-            "GMAIL_APP_PASSWORD não definido no .env"
+            "SENHA_APP_GMAIL não definido no .env"
         )
 
-    if not ARQUIVO_CONTATOS.exists():
+    if not BANCO_DADOS.is_file():
         erros.append(
-            f"Arquivo de contatos não encontrado: "
-            f"{ARQUIVO_CONTATOS}"
+            "Banco de dados não encontrado: "
+            f"{BANCO_DADOS}"
         )
 
     if erros:
@@ -684,13 +644,7 @@ def mostrar_contato(
 def executar():
     validar_configuracao()
 
-    dados = carregar_json(
-        ARQUIVO_CONTATOS
-    )
-
-    contatos = dados[
-        "contatos"
-    ]
+    contatos = carregar_contatos_banco()
 
     # --------------------------------------------------------
     # Lê o histórico existente
@@ -703,28 +657,28 @@ def executar():
     print("=" * 78)
 
     print(
-        f"Arquivo de contatos: "
-        f"{ARQUIVO_CONTATOS}"
+        f"Banco de dados:       "
+        f"{BANCO_DADOS}"
     )
 
     print(
-        f"Arquivo de saída:    "
-        f"{ARQUIVO_SAIDA}"
+        f"Histórico:            "
+        f"tabela envios"
     )
 
     print(
-        f"Contatos no JSON:    "
+        f"Contatos no banco:   "
         f"{len(contatos)}"
     )
 
     print(
-        f"Já enviados:         "
+        f"Enviados/pendentes:  "
         f"{len(emails_enviados)}"
     )
 
     print(
-        f"DRY_RUN:             "
-        f"{DRY_RUN}"
+        f"SIMULAÇÃO:           "
+        f"{SIMULACAO}"
     )
 
     print(
@@ -759,7 +713,7 @@ def executar():
     )
 
     selecionados = selecionados[
-        :MAX_ENVIOS_POR_EXECUCAO
+        :MAXIMO_ENVIOS_POR_EXECUCAO
     ]
 
     print(
@@ -778,7 +732,7 @@ def executar():
     # DRY RUN
     # ========================================================
 
-    if DRY_RUN:
+    if SIMULACAO:
 
         for indice, contato in enumerate(
             selecionados,
@@ -791,12 +745,12 @@ def executar():
 
         print()
         print(
-            "DRY_RUN ativo. "
+            "SIMULAÇÃO ativa. "
             "Nenhum e-mail foi enviado."
         )
 
         # IMPORTANTE:
-        # Dry run NÃO grava no arquivo de saída.
+        # Dry run NÃO grava no banco de histórico.
 
         return
 
@@ -813,14 +767,14 @@ def executar():
     erros_consecutivos = 0
 
     with smtplib.SMTP_SSL(
-        SMTP_HOST,
-        SMTP_PORT,
+        SERVIDOR_SMTP,
+        PORTA_SMTP,
         context=contexto_ssl,
     ) as smtp:
 
         smtp.login(
-            GMAIL_EMAIL,
-            GMAIL_APP_PASSWORD,
+            EMAIL_GMAIL,
+            SENHA_APP_GMAIL,
         )
 
         for indice, contato in enumerate(
@@ -845,7 +799,16 @@ def executar():
                 "score"
             )
 
+            email_aceito_pelo_smtp = False
+
             try:
+
+                # Se houver uma interrupção a partir daqui, este
+                # destinatário fica bloqueado como resultado incerto.
+                append_registro_saida(
+                    contato=contato,
+                    status="enviando",
+                )
 
                 mensagem = criar_mensagem(
                     contato
@@ -854,8 +817,9 @@ def executar():
                 smtp.send_message(
                     mensagem
                 )
+                email_aceito_pelo_smtp = True
 
-                # Registra imediatamente no arquivo.
+                # Confirma o sucesso em uma transação separada.
                 append_registro_saida(
                     contato=contato,
                     status="enviado",
@@ -883,15 +847,14 @@ def executar():
                 erros += 1
                 erros_consecutivos += 1
 
-                # Erros também ficam registrados.
-                #
-                # Como status != "enviado", o e-mail poderá
-                # ser tentado novamente na próxima execução.
-                append_registro_saida(
-                    contato=contato,
-                    status="erro",
-                    erro=erro,
-                )
+                if not email_aceito_pelo_smtp:
+                    # Falhou antes da confirmação do SMTP: pode
+                    # ser tentado novamente em outra execução.
+                    append_registro_saida(
+                        contato=contato,
+                        status="erro",
+                        erro=erro,
+                    )
 
                 print(
                     f"[{indice}/"
@@ -905,9 +868,17 @@ def executar():
                     f"       {erro}"
                 )
 
+                if email_aceito_pelo_smtp:
+                    print(
+                        "       O SMTP aceitou a mensagem, mas não foi "
+                        "possível confirmar no banco. O registro "
+                        "permanece como 'enviando' para evitar duplicação."
+                    )
+                    break
+
                 if (
                     erros_consecutivos
-                    >= MAX_ERROS_CONSECUTIVOS
+                    >= MAXIMO_ERROS_CONSECUTIVOS
                 ):
 
                     print()
@@ -938,7 +909,7 @@ def executar():
 
     print(
         f"Histórico:                "
-        f"{ARQUIVO_SAIDA}"
+        f"{BANCO_DADOS} (tabela envios)"
     )
 
 

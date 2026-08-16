@@ -29,32 +29,99 @@ Estrutura sugerida do diretório:
 
 ```text
 send_mail/
-├── mailer.py
+├── enviar_emails.py
+├── criar_banco.py
+├── exportar_envios.py
+├── importar_envios.py
 ├── .env
 ├── .env.example
 ├── README.md
-├── contatos_transporte_individualizados_rankeados.json
-├── envios.json
-└── envios.jsonl
+└── contatos_ranqueados.db
 ```
 
-### `mailer.py`
+### `enviar_emails.py`
 
 Programa principal. Ele:
 
 1. carrega automaticamente as variáveis do `.env`;
-2. abre o JSON de contatos;
+2. abre a tabela `contatos` do banco SQLite;
 3. lê o histórico de envios;
 4. elimina contatos já enviados;
 5. filtra por categoria e score mínimo;
-6. preserva a ordenação de relevância existente no JSON;
+6. preserva a ordenação de relevância registrada no banco;
 7. monta uma mensagem individual para cada destinatário;
 8. envia pelo Gmail usando SMTP autenticado;
 9. registra imediatamente cada sucesso ou erro no histórico.
 
-### `contatos_transporte_individualizados_rankeados.json`
+### `criar_banco.py`
 
-Base principal de destinatários.
+Cria um novo banco SQLite a partir da base de contatos em JSON. O arquivo de
+entrada é informado com `-f`, e o destino pode ser escolhido com `-o`:
+
+```bash
+python criar_banco.py -a contatos_rankeados.json -d contatos_ranqueados.db
+```
+
+Por segurança, um arquivo existente não é substituído automaticamente. Para
+recriá-lo intencionalmente, use a opção `--sobrescrever`:
+
+```bash
+python criar_banco.py -a contatos_rankeados.json \
+  -d contatos_ranqueados.db --sobrescrever
+```
+
+O `-a` identifica o arquivo de entrada e `-d` identifica o destino.
+
+### `exportar_envios.py`
+
+Exporta a tabela `envios` do SQLite para um arquivo JSON:
+
+```bash
+python exportar_envios.py -a contatos_ranqueados.db -d enviados.json
+```
+
+O arquivo existente só é substituído com `--sobrescrever`. Também é possível
+filtrar uma ou mais situações com `-s/--situacao` e gerar uma saída compacta:
+
+```bash
+python exportar_envios.py -a contatos_ranqueados.db -d enviados.json \
+  -s enviado -s enviando --compacto --sobrescrever
+```
+
+Sem `-s`, todos os registros da tabela são exportados. A saída contém
+metadados do dump e um objeto `envios` indexado pelo endereço de e-mail.
+
+### `importar_envios.py`
+
+Restaura no SQLite o histórico versionado em `enviados.json`:
+
+```bash
+python importar_envios.py -a enviados.json -b contatos_ranqueados.db
+```
+
+Por padrão, registros que já existem no banco são preservados. Para atualizá-los
+com os valores do JSON, use `--sobrescrever`. A opção `--simular` valida o
+arquivo e mostra as quantidades sem modificar o banco:
+
+```bash
+python importar_envios.py -a enviados.json -b contatos_ranqueados.db \
+  --sobrescrever --simular
+```
+
+Assim, o arquivo versionado e persistente pode ser `enviados.json`. O SQLite
+continua sendo usado localmente durante os envios e pode ser reconstruído com
+`criar_banco.py` seguido de `importar_envios.py`.
+
+### `contatos_ranqueados.db`
+
+Banco SQLite usado pela aplicação. Ele contém duas tabelas:
+
+- `contatos`: os 24.479 contatos, incluindo colunas pesquisáveis e o registro JSON integral em `dados_json`;
+- `envios`: o estado mais recente de envio de cada endereço.
+
+### Fonte única de dados
+
+O programa lê contatos e persiste o histórico exclusivamente em `contatos_ranqueados.db`. Arquivos JSON e outros bancos SQLite não são consultados nem atualizados.
 
 Ela foi construída para conter, além do e-mail, informações que permitem individualizar a mensagem. Um registro típico possui uma estrutura semelhante a:
 
@@ -188,33 +255,27 @@ As credenciais e os parâmetros da campanha não devem ficar escritos diretament
 Exemplo:
 
 ```dotenv
-GMAIL_EMAIL=seuemail@gmail.com
-GMAIL_APP_PASSWORD=xxxx_xxxx_xxxx_xxxx
+EMAIL_GMAIL=seuemail@gmail.com
+SENHA_APP_GMAIL=xxxx_xxxx_xxxx_xxxx
 
 EMAIL_UNIVESP=25202874@aluno.univesp.br
 NOME_REMETENTE=André Meneghelli
 UNIVERSIDADE=Universidade Virtual do Estado de São Paulo – UNIVESP
 
-ARQUIVO_CONTATOS=contatos_transporte_individualizados_rankeados.json
+# contatos_ranqueados.db é usado a partir da pasta de enviar_emails.py
 
-# Histórico legado no formato objeto JSON:
-ARQUIVO_ENVIOS=envios.json
-
-# Histórico append-only recomendado para novas execuções:
-ARQUIVO_SAIDA=envios.jsonl
-
-DRY_RUN=true
+SIMULACAO=true
 
 CATEGORIAS_PERMITIDAS=A
 SCORE_MINIMO=80
 
-MAX_ENVIOS_POR_EXECUCAO=10
+MAXIMO_ENVIOS_POR_EXECUCAO=10
 INTERVALO_SEGUNDOS=3
 
-MAX_ERROS_CONSECUTIVOS=5
+MAXIMO_ERROS_CONSECUTIVOS=5
 
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=465
+SERVIDOR_SMTP=smtp.gmail.com
+PORTA_SMTP=465
 
 ASSUNTO_EMAIL=Projeto UNIVESP: proposta de acompanhamento de transporte por QR Code
 ```
@@ -238,7 +299,7 @@ O programa não deve usar a senha normal da conta Google.
 Use uma **senha de aplicativo** da conta Google e coloque-a em:
 
 ```dotenv
-GMAIL_APP_PASSWORD=...
+SENHA_APP_GMAIL=...
 ```
 
 O Gmail é usado como remetente autenticado. O endereço institucional da UNIVESP pode aparecer na assinatura e também pode ser configurado como `Reply-To`.
@@ -282,7 +343,7 @@ Por isso, o envio atual é realizado via Gmail, mantendo o endereço institucion
 
 ## 9. Carregamento automático do `.env`
 
-No início do `mailer.py`:
+No início do `enviar_emails.py`:
 
 ```python
 from dotenv import load_dotenv
@@ -293,7 +354,7 @@ load_dotenv()
 Depois disso, valores podem ser obtidos normalmente:
 
 ```python
-GMAIL_EMAIL = os.getenv("GMAIL_EMAIL")
+EMAIL_GMAIL = os.getenv("EMAIL_GMAIL")
 ```
 
 Funções auxiliares permitem ler tipos corretamente:
@@ -331,7 +392,7 @@ Nunca comece uma campanha grande diretamente em modo real.
 No `.env`:
 
 ```dotenv
-DRY_RUN=true
+SIMULACAO=true
 ```
 
 Nesse modo o programa:
@@ -346,7 +407,7 @@ Nesse modo o programa:
 Depois de validar algumas mensagens:
 
 ```dotenv
-DRY_RUN=false
+SIMULACAO=false
 ```
 
 ---
@@ -376,7 +437,7 @@ Um contato só é elegível quando passa pelos filtros definidos no programa.
 ### Máximo por execução
 
 ```dotenv
-MAX_ENVIOS_POR_EXECUCAO=50
+MAXIMO_ENVIOS_POR_EXECUCAO=50
 ```
 
 Isso limita quantos destinatários serão processados naquela execução, mesmo que milhares sejam elegíveis.
@@ -458,23 +519,21 @@ A mensagem deixa claro que se trata de uma proposta acadêmica, não de uma ofer
 
 Esta parte é crítica: o sistema não deve enviar novamente para um destinatário que já recebeu a mensagem.
 
-Existem atualmente **dois formatos de histórico** no projeto.
+O projeto utiliza o banco SQLite `contatos_ranqueados.db`, que reúne contatos e histórico operacional.
 
-### 14.1 `envios.json` — histórico legado/reconstruído
-
-Foi criado um `envios.json` a partir da saída de uma execução anterior do `mailer.py`.
+O histórico operacional fica na tabela `envios` do mesmo banco.
 
 Essa execução tinha:
 
 ```text
-DRY_RUN: False
+SIMULAÇÃO: False
 Categorias: A
 Score mínimo: 80
 Máximo por execução: 3500
 Intervalo: 3s
 ```
 
-Foram reconstruídos **549 envios confirmados como `OK`**.
+Os envios confirmados pelas execuções anteriores estão na tabela `envios`.
 
 Estrutura:
 
@@ -491,7 +550,7 @@ Estrutura:
       "erro": null,
       "indice_execucao": 1,
       "total_planejado_execucao": 3500,
-      "origem": "Reconstruído da saída do mailer.py"
+      "origem": "Reconstruído da saída de enviar_emails.py"
     }
   }
 }
@@ -499,48 +558,43 @@ Estrutura:
 
 Como o log original não possuía timestamp individual por mensagem, `data` foi mantido como `null` em vez de inventar horários.
 
-Esse arquivo é importante porque contém os destinatários já enviados antes da implementação do novo formato append-only.
+Contatos são lidos da tabela `contatos` e novas tentativas são gravadas na tabela `envios`.
 
 ---
 
-## 15. Histórico append-only recomendado: JSON Lines
+## 15. Atualização do histórico
 
-Para novas execuções, o formato recomendado é JSON Lines (`.jsonl`).
+Cada mudança de estado do destinatário é gravada em uma transação SQLite.
 
 No `.env`:
 
 ```dotenv
-ARQUIVO_SAIDA=envios.jsonl
+# contatos_ranqueados.db fica ao lado de enviar_emails.py
 ```
 
-Cada tentativa é acrescentada ao fim do arquivo:
+Estrutura da tabela:
 
-```json
-{"data":"2026-08-15T20:40:01-03:00","status":"enviado","email":"empresa1@exemplo.com.br","entidade":"Empresa 1","municipio":"Campinas","uf":"SP","score":100,"categoria":"A","erro":null}
-{"data":"2026-08-15T20:40:04-03:00","status":"enviado","email":"empresa2@exemplo.com.br","entidade":"Empresa 2","municipio":"São Paulo","uf":"SP","score":99,"categoria":"A","erro":null}
-{"data":"2026-08-15T20:40:07-03:00","status":"erro","email":"empresa3@exemplo.com.br","entidade":"Empresa 3","municipio":"Sorocaba","uf":"SP","score":98,"categoria":"A","erro":"..."}
+```sql
+CREATE TABLE envios (
+    email TEXT PRIMARY KEY,
+    entidade TEXT,
+    municipio TEXT,
+    uf TEXT,
+    score INTEGER,
+    categoria TEXT,
+    status TEXT NOT NULL,
+    data TEXT,
+    erro TEXT
+);
 ```
 
-### Por que JSONL?
-
-Ele é adequado para esse problema porque:
-
-- não exige reescrever todo o histórico;
-- cada envio pode ser persistido imediatamente;
-- uma interrupção não destrói os registros anteriores;
-- é fácil fazer append;
-- é simples reconstruir o conjunto de e-mails já enviados;
-- erros podem ser registrados sem marcar o contato como concluído.
+O SQLite usa transações, `synchronous=FULL` e um tempo de espera para bloqueios transitórios para proteger o histórico contra interrupções durante a gravação. O modo de journal não é forçado pela aplicação, permitindo usar o modo `DELETE`, mais compatível com ferramentas gráficas acessando arquivos do WSL.
 
 ---
 
 ## 16. Como pular e-mails já enviados
 
-Ao iniciar, o programa deve ler o histórico existente e criar um conjunto (`set`) de e-mails com:
-
-```json
-"status": "enviado"
-```
+Ao iniciar, o programa consulta o banco e cria um conjunto (`set`) de e-mails com status `enviado` ou `enviando`.
 
 Exemplo conceitual:
 
@@ -553,7 +607,7 @@ if email in emails_enviados:
 
 Assim, se o processo for interrompido após centenas de mensagens, basta executá-lo novamente.
 
-Os e-mails já registrados como enviados serão pulados.
+Os e-mails já enviados serão pulados. Registros `enviando` também são pulados porque indicam que uma interrupção pode ter acontecido depois de o SMTP aceitar a mensagem.
 
 Um registro com:
 
@@ -565,9 +619,9 @@ não deve entrar no conjunto de enviados e pode ser tentado novamente em outra e
 
 ---
 
-## 17. Append imediato após cada envio
+## 17. Registro imediato após cada envio
 
-Depois de `smtp.send_message()` retornar com sucesso, o registro deve ser anexado imediatamente:
+Antes do envio, o registro recebe o estado `enviando`. Depois de `smtp.send_message()` retornar com sucesso, ele é confirmado imediatamente:
 
 ```python
 append_registro_saida(
@@ -576,48 +630,13 @@ append_registro_saida(
 )
 ```
 
-O arquivo é aberto com:
-
-```python
-open("a", encoding="utf-8")
-```
-
-ou equivalente via `Path`:
-
-```python
-ARQUIVO_SAIDA.open("a", encoding="utf-8")
-```
-
-O uso de `flush()` e `os.fsync()` reduz a chance de perder o último registro em caso de encerramento inesperado:
-
-```python
-arquivo.flush()
-os.fsync(arquivo.fileno())
-```
+Se o programa parar no intervalo entre essas operações, o estado `enviando` impede um reenvio automático potencialmente duplicado. Esse registro deve ser conferido manualmente antes de ser alterado para `erro` ou `enviado`.
 
 ---
 
-## 18. Migração entre `envios.json` e `envios.jsonl`
+## 18. Banco unificado
 
-O projeto possui um histórico inicial em `envios.json` com 549 envios reconstruídos.
-
-Antes de abandonar definitivamente o formato legado, o `mailer.py` deve garantir uma destas estratégias:
-
-### Opção A — ler os dois arquivos
-
-Na inicialização:
-
-1. carregar `envios.json`;
-2. carregar `envios.jsonl`, se existir;
-3. unir todos os e-mails com status `enviado` em um único `set`.
-
-Essa é a estratégia mais segura durante a transição.
-
-### Opção B — converter o legado uma única vez
-
-Converter os 549 registros do `envios.json` em linhas de `envios.jsonl` e passar a utilizar somente o novo arquivo.
-
-Depois da migração, `envios.json` pode ser mantido apenas como backup histórico.
+O `enviar_emails.py` consulta somente `contatos_ranqueados.db`. A tabela `contatos` guarda a base ranqueada; na tabela `envios`, registros com status `enviado` ou `enviando` bloqueiam novas tentativas e registros com status `erro` podem ser tentados novamente.
 
 ---
 
@@ -638,12 +657,12 @@ cd ~/Documentos/send_mail
 Execute:
 
 ```bash
-python mailer.py
+python enviar_emails.py
 ```
 
-Em `DRY_RUN=true`, nenhuma mensagem real deve ser enviada.
+Em `SIMULACAO=true`, nenhuma mensagem real deve ser enviada.
 
-Em `DRY_RUN=false`, o terminal mostra o progresso:
+Em `SIMULACAO=false`, o terminal mostra o progresso:
 
 ```text
 [1/50] OK | 100 | EMPRESA EXEMPLO | contato@empresa.com.br
@@ -684,7 +703,7 @@ Por isso, o histórico deve sempre ser persistido imediatamente após cada suces
 O `.env` pode conter:
 
 ```dotenv
-MAX_ERROS_CONSECUTIVOS=5
+MAXIMO_ERROS_CONSECUTIVOS=5
 ```
 
 Se muitos envios falharem consecutivamente, o programa deve interromper a execução. Isso evita continuar enviando quando há um problema estrutural, por exemplo:
@@ -821,25 +840,25 @@ No momento da documentação:
 
 - a base rankeada possui dezenas de milhares de contatos;
 - a categoria `A` contém os contatos de maior prioridade;
-- uma execução real foi iniciada com `DRY_RUN=False`;
+- uma execução real foi iniciada com `SIMULACAO=False`;
 - o lote planejado tinha 3.500 contatos;
 - o intervalo utilizado era de 3 segundos;
 - a saída disponível confirmou 549 mensagens enviadas com status `OK`;
-- esses 549 envios foram reconstruídos no arquivo `envios.json` para evitar duplicação;
-- o formato append-only `envios.jsonl` é recomendado para novas execuções.
+- os contatos e envios anteriores foram importados para `contatos_ranqueados.db`;
+- os novos resultados são registrados na tabela `envios` do mesmo banco.
 
 ---
 
 ## 27. Fluxo recomendado daqui em diante
 
 ```text
-contatos_transporte_individualizados_rankeados.json
+contatos_ranqueados.db (tabela contatos)
                      │
                      ▼
                carregar contatos
                      │
                      ▼
-       carregar envios.json + envios.jsonl
+       carregar contatos_ranqueados.db
                      │
                      ▼
            criar set de já enviados
@@ -858,7 +877,7 @@ contatos_transporte_individualizados_rankeados.json
           sucesso            erro
              │                │
              ▼                ▼
-       append enviado     append erro
+      registrar enviado  registrar erro
              │                │
              └───────┬────────┘
                      ▼
