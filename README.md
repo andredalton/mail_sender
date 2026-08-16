@@ -59,14 +59,14 @@ Cria um novo banco SQLite a partir da base de contatos em JSON. O arquivo de
 entrada é informado com `-f`, e o destino pode ser escolhido com `-o`:
 
 ```bash
-python criar_banco.py -a contatos_rankeados.json -d contatos_ranqueados.db
+python criar_banco.py -a contatos_ranqueados.json -d contatos_ranqueados.db
 ```
 
 Por segurança, um arquivo existente não é substituído automaticamente. Para
 recriá-lo intencionalmente, use a opção `--sobrescrever`:
 
 ```bash
-python criar_banco.py -a contatos_rankeados.json \
+python criar_banco.py -a contatos_ranqueados.json \
   -d contatos_ranqueados.db --sobrescrever
 ```
 
@@ -838,7 +838,7 @@ Manter uma blacklist local para qualquer destinatário que peça para não receb
 
 No momento da documentação:
 
-- a base rankeada possui dezenas de milhares de contatos;
+- a base ranqueada possui dezenas de milhares de contatos;
 - a categoria `A` contém os contatos de maior prioridade;
 - uma execução real foi iniciada com `SIMULACAO=False`;
 - o lote planejado tinha 3.500 contatos;
